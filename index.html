@@ -266,7 +266,6 @@
       <div class="od-row">
         <span class="od-dot" id="odDot" aria-hidden="true"></span>
         <span class="hint" id="odStatus" role="status" style="margin:0">OneDrive: checking…</span>
-        <button type="button" class="ghost" id="odSign" hidden>Sign in to OneDrive</button>
       </div>
       <div class="sheet-box">
         <div class="sheet-head">
@@ -585,17 +584,15 @@
   drawSheetList();
 
 
-  /* ---------- OneDrive: every printed pass is saved as a PDF ----------
-     Uses the "gatepass" Entra SPA app.
-     Works when this page is hosted on https (e.g. GitHub Pages) with its URL
-     added as a redirect URI on that app, and Files.ReadWrite delegated permission. */
+  /* ---------- OneDrive: every printed or saved pass goes to OneDrive as a PDF ----------
+     No sign-in: the page sends the PDF to the company's "gatepass-saver" helper on Vercel,
+     which holds the Entra app secret privately and saves the file to OneDrive. */
   var OD = {
-    clientId: "be3f583b-57fe-4777-8b75-c05a7d68794b",   // "gatepass" app in Entra
-    tenantId: "f3f819ba-724b-4c0b-a9c0-2aa8d12bcbcc",
-    folder: "Gate Pass",                 // OneDrive folder; year/month subfolders are added
-    scopes: ["Files.ReadWrite"]
+    // Paste the Vercel link here after deploying, keeping /api/save-pass at the end:
+    endpoint: "https://YOUR-PROJECT.vercel.app/api/save-pass",
+    folder: "Gate Pass"
   };
-  var msal = null, pending = [];
+  var pending = [];
   function odSay(text, state) {
     $("odStatus").textContent = "OneDrive: " + text;
     $("odDot").className = "od-dot" + (state ? " " + state : "");
@@ -614,116 +611,79 @@
   function ensureLibs() {
     if (libs) return libs;
     libs = Promise.all([
-      window.msal ? Promise.resolve() : loadScript(["https://alcdn.msauth.net/browser/2.35.0/js/msal-browser.min.js",
-        "https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.35.0/lib/msal-browser.min.js"]),
-      window.html2canvas ? Promise.resolve() : loadScript(["https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"]),
-      (window.jspdf ? Promise.resolve() : loadScript(["https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"]))
+      window.html2canvas ? Promise.resolve() : loadScript(["https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",
+        "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"]),
+      window.jspdf ? Promise.resolve() : loadScript(["https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+        "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"])
     ]);
     libs.catch(function () { libs = null; });
     return libs;
   }
-  function account() {
-    var a = msal && msal.getAllAccounts();
-    return a && a.length ? a[0] : null;
-  }
-  function token() {
-    var acc = account();
-    if (!acc) return Promise.reject(new Error("signin"));
-    return msal.acquireTokenSilent({ scopes: OD.scopes, account: acc })
-      .then(function (r) { return r.accessToken; });
-  }
-  function slug(t) { return (t || "visitor").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
-  function cardPdf(node) {
+  function slug(t) { return (t || "visitor").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "visitor"; }
+  function cardPdfBase64(node) {
     var stage = $("odStage"); stage.innerHTML = ""; stage.appendChild(node);
     node.style.transform = "none"; node.style.borderRadius = "0"; node.style.boxShadow = "none";
-    return html2canvas(node, { scale: 3, backgroundColor: "#ffffff", useCORS: true, logging: false }).then(function (cv) {
+    return html2canvas(node, { scale: 3, backgroundColor: "#ffffff", logging: false }).then(function (cv) {
       stage.innerHTML = "";
       var pdf = new window.jspdf.jsPDF({ unit: "mm", format: [54, 86], orientation: "portrait" });
-      pdf.addImage(cv.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, 54, 86);
-      return pdf.output("blob");
+      pdf.addImage(cv.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 54, 86);
+      return pdf.output("datauristring").split(",")[1];
     });
   }
+  var MONTHS = ["01-Jan","02-Feb","03-Mar","04-Apr","05-May","06-Jun","07-Jul","08-Aug","09-Sep","10-Oct","11-Nov","12-Dec"];
   function upload(item) {
     var d = (item.date || today()).split("-");
-    var months = ["01-Jan","02-Feb","03-Mar","04-Apr","05-May","06-Jun","07-Jul","08-Aug","09-Sep","10-Oct","11-Nov","12-Dec"];
-    var path = OD.folder + "/" + d[0] + "/" + months[parseInt(d[1], 10) - 1] + "/" +
-               item.pno.replace(/\//g, "-") + "_" + slug(item.name) + ".pdf";
-    return Promise.all([cardPdf(item.node), token()]).then(function (r) {
-      var url = "https://graph.microsoft.com/v1.0/me/drive/root:/" +
-                path.split("/").map(encodeURIComponent).join("/") + ":/content";
-      return fetch(url, { method: "PUT", headers: { Authorization: "Bearer " + r[1], "Content-Type": "application/pdf" }, body: r[0] });
+    var body = {
+      fileName: item.pno.replace(/\//g, "-") + "_" + slug(item.name) + ".pdf",
+      year: d[0], month: MONTHS[parseInt(d[1], 10) - 1]
+    };
+    return cardPdfBase64(item.node).then(function (b64) {
+      body.pdfBase64 = b64;
+      return fetch(OD.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     }).then(function (res) {
-      if (!res.ok) throw new Error("http " + res.status);
-      return path;
+      return res.json().catch(function () { return {}; }).then(function (j) {
+        if (!res.ok || !j.ok) throw new Error(j.error || ("http " + res.status));
+        return j;
+      });
     });
   }
+  function configured() { return OD.endpoint.indexOf("YOUR-PROJECT") === -1; }
   function saveToOneDrive(items) {
     if (!items || !items.length) return;
-    if (!msal) { pending = pending.concat(items); return; }
-    if (!account()) {
-      pending = pending.concat(items);
-      odSay(pending.length + " pass" + (pending.length > 1 ? "es" : "") + " waiting. Sign in to save them.", "warn");
-      $("odSign").hidden = false; return;
-    }
+    if (!configured()) { odSay("not set up yet. The helper link still needs to be added to this page.", "err"); return; }
     odSay("saving " + items.length + " pass" + (items.length > 1 ? "es" : "") + "…", "warn");
-    var done = 0, failed = [];
-    items.reduce(function (p, it) {
-      return p.then(function () { return upload(it).then(function () { done++; }, function (e) { failed.push(it); }); });
-    }, Promise.resolve()).then(function () {
-      if (!failed.length) odSay("saved " + done + " pass" + (done > 1 ? "es" : "") + " to " + OD.folder + " at " +
-        new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ".", "ok");
-      else {
-        pending = pending.concat(failed);
-        odSay(failed.length + " pass" + (failed.length > 1 ? "es" : "") + " not saved. They'll retry after you sign in again.", "err");
-        $("odSign").hidden = false;
-      }
+    ensureLibs().then(function () {
+      var done = 0, failed = [], lastErr = "";
+      return items.reduce(function (p, it) {
+        return p.then(function () {
+          return upload(it).then(function () { done++; }, function (e) { failed.push(it); lastErr = e.message; });
+        });
+      }, Promise.resolve()).then(function () {
+        var t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        if (!failed.length) {
+          odSay("saved " + done + " pass" + (done > 1 ? "es" : "") + " to " + OD.folder + " at " + t + ".", "ok");
+          if (pending.length) { var q = pending; pending = []; saveToOneDrive(q); }
+        } else {
+          pending = pending.concat(failed);
+          odSay(failed.length + " not saved (" + lastErr + "). Will retry with the next save.", "err");
+        }
+      });
+    }).catch(function () {
+      pending = pending.concat(items);
+      odSay("couldn't prepare the PDF. Check the internet connection; it will retry with the next save.", "err");
     });
-  }
-  function needWeb() {
-    if (msal) return false;
-    odSay("saving works only from the company web link (GitHub Pages), not from a downloaded file or the Claude preview.", "err");
-    $("odStatus").scrollIntoView({ block: "center", behavior: "smooth" });
-    return true;
   }
   $("savePass").addEventListener("click", function () {
     if (!$("name").value.trim()) { $("name").focus(); $("name").placeholder = "Enter the visitor's name to save"; return; }
-    if (needWeb()) return;
     saveToOneDrive([{ node: snapshot(), name: $("name").value.trim(), pno: passNo(), date: $("date").value || today() }]);
   });
   $("saveSheet").addEventListener("click", function () {
     if (!sheet.length) { odSay("add passes to the sheet first, or use Save to OneDrive for a single pass.", "warn"); return; }
-    if (needWeb()) return;
     saveToOneDrive(sheet.map(function (it) { return { node: it.node.cloneNode(true), name: it.name, pno: it.pno, date: it.date }; }));
   });
-  $("odSign").addEventListener("click", function () {
-    if (!msal) return;
-    msal.loginPopup({ scopes: OD.scopes, prompt: "select_account" }).then(function (r) {
-      msal.setActiveAccount(r.account);
-      $("odSign").hidden = true;
-      odSay("signed in as " + r.account.username + ".", "ok");
-      var q = pending; pending = [];
-      if (q.length) saveToOneDrive(q);
-    }).catch(function () { odSay("sign-in was cancelled or blocked. Allow pop-ups and try again.", "err"); });
-  });
   (function initOneDrive() {
-    var onWeb = location.protocol === "https:" && !/claude\.ai$|claudeusercontent\.com$/.test(location.hostname);
-    if (!onWeb) {
-      odSay("available when this page is opened from the company web link (not from a file or the Claude preview).", "");
-      return;
-    }
-    ensureLibs().then(function () {
-      msal = new window.msal.PublicClientApplication({
-        auth: { clientId: OD.clientId, authority: "https://login.microsoftonline.com/" + OD.tenantId,
-                redirectUri: location.origin + location.pathname },
-        cache: { cacheLocation: "localStorage" }
-      });
-      return msal.handleRedirectPromise ? msal.handleRedirectPromise() : null;
-    }).then(function () {
-      var acc = account();
-      if (acc) { msal.setActiveAccount(acc); odSay("connected as " + acc.username + ". Printed passes save automatically.", "ok"); }
-      else { odSay("not signed in. Sign in once on this computer.", "warn"); $("odSign").hidden = false; }
-      if (pending.length && acc) { var q = pending; pending = []; saveToOneDrive(q); }
-    }).catch(function () { odSay("couldn't load the Microsoft sign-in. Check the internet connection.", "err"); });
+    if (!configured()) { odSay("not set up yet. The helper link still needs to be added to this page.", "warn"); return; }
+    odSay("ready. Printed and saved passes go to " + OD.folder + " automatically, no sign-in needed.", "ok");
   })();
 
   /* Shrink the whole card to fit narrow phone screens instead of squashing it */

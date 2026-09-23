@@ -1,0 +1,3 @@
+{
+  "functions": { "api/save-pass.js": { "maxDuration": 20 } }
+}

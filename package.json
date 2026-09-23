@@ -1,0 +1,7 @@
+{
+  "name": "gatepass-saver",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Saves visitor gate pass PDFs to OneDrive without user sign-in",
+  "engines": { "node": ">=18" }
+}
