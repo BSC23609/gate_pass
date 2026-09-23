@@ -586,11 +586,11 @@
 
 
   /* ---------- OneDrive: every printed pass is saved as a PDF ----------
-     Uses the group's existing Entra SPA app (same one as the NMDC dashboard).
+     Uses the "gatepass" Entra SPA app.
      Works when this page is hosted on https (e.g. GitHub Pages) with its URL
      added as a redirect URI on that app, and Files.ReadWrite delegated permission. */
   var OD = {
-    clientId: "627c4231-5cdf-40b8-8af8-fef565f62bb7",
+    clientId: "be3f583b-57fe-4777-8b75-c05a7d68794b",   // "gatepass" app in Entra
     tenantId: "f3f819ba-724b-4c0b-a9c0-2aa8d12bcbcc",
     folder: "Gate Pass",                 // OneDrive folder; year/month subfolders are added
     scopes: ["Files.ReadWrite"]
